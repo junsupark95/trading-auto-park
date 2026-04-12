@@ -24,6 +24,12 @@ services:
         sync: false
       - key: KIS_PAPER_ACCOUNT_NO
         sync: false
+      - key: KIS_APP_KEY
+        sync: false
+      - key: KIS_APP_SECRET
+        sync: false
+      - key: KIS_ACCOUNT_NO
+        sync: false
       - key: KIS_HTS_ID
         sync: false
       - key: GEMINI_API_KEY
