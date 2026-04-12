@@ -58,6 +58,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.critical(f"DB 초기화 실패 - 시스템 시작 불가: {e}")
         # DB 실패해도 API는 시작 (헬스체크용)
 
+    # KIS 브로커 연결 (계좌 잔고 실시간 조회용)
+    from backend.brokers.kis.auth import KISAuth
+    from backend.brokers.kis.order_api import KISOrderAPI
+    
+    auth = KISAuth(settings)
+    broker = KISOrderAPI(auth, settings)
+    try:
+        await broker.connect()
+        app.state.broker = broker
+    except Exception as e:
+        logger.error(f"브로커 초기 연결 실패: {e}")
+        app.state.broker = None
+
     yield
 
     # 종료 처리
@@ -144,8 +157,22 @@ async def get_orders() -> dict:
 
 # ===== 계좌/잔고 =====
 @app.get("/api/account")
-async def get_account_balance() -> dict:
-    """계좌 잔고 조회."""
+async def get_account_balance(request: Request) -> dict:
+    """계좌 잔고 조회 (실시간)."""
+    broker = getattr(request.app.state, "broker", None)
+    
+    if broker and await broker.is_connected():
+        try:
+            balance = await broker.get_balance()
+            return {
+                "total_equity": float(balance.total_equity),
+                "available_cash": float(balance.available_cash),
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"잔고 조회 중 오류: {e}")
+            
+    # 브로커 미연결 또는 오류 시 임시(Mock) 잔고 반환
     return {
         "total_equity": 10000000,
         "available_cash": 10000000,
