@@ -176,3 +176,11 @@ backtester/examples/output/*.py
 settings.local.json
 
 .serena/
+
+# ===== AutoTrader =====
+autotrader/.env
+autotrader/.env.local
+autotrader/frontend/node_modules/
+autotrader/frontend/.next/
+autotrader/frontend/out/
+autotrader/backend/.kis_token*.json

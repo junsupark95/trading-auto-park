@@ -1,0 +1,33 @@
+# render.yaml - Render 배포 설정
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: autotrader
+    runtime: docker
+    dockerfilePath: ./autotrader/Dockerfile
+    dockerContext: ./autotrader
+    plan: starter
+    region: singapore  # 한국 시장에 가장 가까운 리전
+    envVars:
+      - key: TRADING_MODE
+        value: paper
+      - key: LIVE_TRADING
+        value: "false"
+      - key: CONFIRM_LIVE_ORDERS
+        value: "false"
+      - key: DATABASE_URL
+        sync: false  # Render 대시보드에서 직접 설정
+      - key: KIS_PAPER_APP_KEY
+        sync: false
+      - key: KIS_PAPER_APP_SECRET
+        sync: false
+      - key: KIS_PAPER_ACCOUNT_NO
+        sync: false
+      - key: KIS_HTS_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+    healthCheckPath: /api/health
+    buildCommand: ""
+    startCommand: ""
