@@ -142,6 +142,17 @@ async def get_orders() -> dict:
     }
 
 
+# ===== 계좌/잔고 =====
+@app.get("/api/account")
+async def get_account_balance() -> dict:
+    """계좌 잔고 조회."""
+    return {
+        "total_equity": 10000000,
+        "available_cash": 10000000,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
 # ===== 손익 =====
 @app.get("/api/pnl")
 async def get_pnl() -> dict:

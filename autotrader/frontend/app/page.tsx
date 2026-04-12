@@ -28,6 +28,11 @@ interface PnlData {
   win_rate: number;
 }
 
+interface AccountData {
+  total_equity: number;
+  available_cash: number;
+}
+
 interface RiskData {
   daily_loss_limit_pct: number;
   per_symbol_loss_limit_pct: number;
@@ -80,16 +85,18 @@ export default function Dashboard() {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [strategy, setStrategy] = useState<StrategyData | null>(null);
   const [pnl, setPnl] = useState<PnlData | null>(null);
+  const [account, setAccount] = useState<AccountData | null>(null);
   const [risk, setRisk] = useState<RiskData | null>(null);
   const [ai, setAi] = useState<AIData | null>(null);
   const [connected, setConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState('');
 
   const refreshData = useCallback(async () => {
-    const [h, s, p, r, a] = await Promise.all([
+    const [h, s, p, acc, r, a] = await Promise.all([
       fetchApi<HealthData>('/api/health'),
       fetchApi<StrategyData>('/api/strategy/status'),
       fetchApi<PnlData>('/api/pnl'),
+      fetchApi<AccountData>('/api/account'),
       fetchApi<RiskData>('/api/risk/status'),
       fetchApi<AIData>('/api/ai/status'),
     ]);
@@ -97,6 +104,7 @@ export default function Dashboard() {
     else { setConnected(false); }
     if (s) setStrategy(s);
     if (p) setPnl(p);
+    if (acc) setAccount(acc);
     if (r) setRisk(r);
     if (a) setAi(a);
     setLastUpdate(new Date().toLocaleTimeString('ko-KR'));
@@ -179,8 +187,22 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* Daily PnL */}
+        {/* Account Balance */}
         <div className="glass-card animate-slide-up" style={{ animationDelay: '0.15s' }}>
+          <div className="flex justify-between items-start mb-3">
+            <h3 className="text-sm font-semibold text-[var(--text-secondary)]">현재 잔고 (예수금)</h3>
+            <span className="text-lg">💳</span>
+          </div>
+          <p className="text-2xl font-bold text-white">
+            {(account?.total_equity ?? 0).toLocaleString('ko-KR')}원
+          </p>
+          <p className="text-xs text-[var(--text-secondary)] mt-1">
+            매수 가능액: {(account?.available_cash ?? 0).toLocaleString('ko-KR')}원
+          </p>
+        </div>
+
+        {/* Daily PnL */}
+        <div className="glass-card animate-slide-up" style={{ animationDelay: '0.2s' }}>
           <div className="flex justify-between items-start mb-3">
             <h3 className="text-sm font-semibold text-[var(--text-secondary)]">일일 손익</h3>
             <span className="text-lg">💰</span>
@@ -188,21 +210,10 @@ export default function Dashboard() {
           <p className={`text-2xl font-bold ${(pnl?.daily_pnl ?? 0) >= 0 ? 'glow-green' : 'glow-red'}`}>
             {(pnl?.daily_pnl ?? 0) >= 0 ? '+' : ''}{(pnl?.daily_pnl ?? 0).toLocaleString('ko-KR')}원
           </p>
-          <p className="text-xs text-[var(--text-secondary)] mt-1">
-            실현: {(pnl?.realized_pnl ?? 0).toLocaleString('ko-KR')}원
-          </p>
-        </div>
-
-        {/* Trades */}
-        <div className="glass-card animate-slide-up" style={{ animationDelay: '0.2s' }}>
-          <div className="flex justify-between items-start mb-3">
-            <h3 className="text-sm font-semibold text-[var(--text-secondary)]">거래 횟수</h3>
-            <span className="text-lg">📊</span>
+          <div className="flex justify-between text-xs text-[var(--text-secondary)] mt-1">
+            <span>실현: {(pnl?.realized_pnl ?? 0).toLocaleString('ko-KR')}원</span>
+            <span>{pnl?.total_trades ?? 0}전 승률 {(pnl?.win_rate ?? 0).toFixed(1)}%</span>
           </div>
-          <p className="text-2xl font-bold">{pnl?.total_trades ?? 0}</p>
-          <p className="text-xs text-[var(--text-secondary)] mt-1">
-            승률: {(pnl?.win_rate ?? 0).toFixed(1)}%
-          </p>
         </div>
 
         {/* Connection */}
