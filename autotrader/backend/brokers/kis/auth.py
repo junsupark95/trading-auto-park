@@ -88,6 +88,12 @@ class KISAuth:
             self._http_client = httpx.AsyncClient(timeout=30.0)
         return self._http_client
 
+    def invalidate_token(self) -> None:
+        """토큰 강제 만료 처리 (API에서 만료 에러 응답 시 호출)."""
+        self._access_token = ""
+        self._token_expires_at = None
+        self._last_token_request = None
+
     async def ensure_token(self) -> str:
         """
         유효한 접근 토큰을 보장합니다.

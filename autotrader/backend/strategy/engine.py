@@ -250,9 +250,9 @@ class TradingEngine:
             await asyncio.sleep(2)
 
     async def _do_scanning(self) -> None:
-        """스캐닝 상태: 후보 종목 탐색."""
+        """스캐닝 상태: 후보 종목 탐색 (1분 간격 주기)."""
         try:
-            # 현재 시간이 진입 시작 시간 전이면 스캔만
+            # 현재 시간이 진입 시작 시간 전이면 스캔 대기
             now = datetime.now()
             current_hm = now.strftime("%H:%M")
 
@@ -265,8 +265,37 @@ class TradingEngine:
                 await asyncio.sleep(5)
                 return
 
+            # 1분 스캔 인터벌 체크 (AI 호출 무료 한도와 연동)
+            import time
+            if not hasattr(self, "_last_scan_time"):
+                self._last_scan_time = 0.0
+
+            if time.time() - self._last_scan_time < 60.0:
+                await asyncio.sleep(1)
+                return
+
+            self._last_scan_time = time.time()
+
+            logger.info("스캐닝 시작 (1분 주기)")
+            candidates = await self._scanner.scan(self._broker.market_data)
+
+            if candidates:
+                # 가장 점수가 높은 최상위 후보 1개를 감시 상태로 전이
+                best = candidates[0]
+                if best.symbol not in self._orb_data:
+                    self._orb_data[best.symbol] = OrbData()
+                
+                try:
+                    self.state_machine.transition(
+                        TradingEvent.BREAKOUT_DETECTED,
+                        symbol=best.symbol,
+                        reason=f"스캔 최상위 포착: 갭 {best.gap_pct:.1f}%"
+                    )
+                except InvalidTransitionError:
+                    pass
+
         except Exception as e:
-            logger.error(f"스캐닝 오류: {e}")
+            logger.error(f"스캐닝 중 예기치 않은 오류: {e}")
             self._metrics.record_api_error()
 
     async def _do_watching(self) -> None:

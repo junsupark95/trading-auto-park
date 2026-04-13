@@ -224,6 +224,14 @@ class KISRestClient:
                         },
                     )
 
+                    # EGW00123, EGW00121 등 토큰 만료/오류 처리
+                    if msg_cd in ("EGW00123", "EGW00121") or "token" in msg1.lower() or "토큰" in msg1:
+                        logger.warning("토큰 만료 감지, 강제 재발급 및 재시도 진행")
+                        self._auth.invalidate_token()
+                        await self._auth.ensure_token()
+                        headers["authorization"] = f"Bearer {self._auth.access_token}"
+                        continue
+
                     # EGW00201: 초당 거래건수 초과 → 재시도
                     if msg_cd == "EGW00201":
                         backoff = min(

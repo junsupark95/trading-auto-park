@@ -59,22 +59,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # DB 실패해도 API는 시작 (헬스체크용)
 
     # KIS 브로커 연결 (계좌 잔고 실시간 조회용)
+    import asyncio
     from backend.brokers.kis.auth import KISAuth
     from backend.brokers.kis.order_api import KISOrderAPI
+    from backend.strategy.engine import TradingEngine
     
     auth = KISAuth(settings)
     broker = KISOrderAPI(auth, settings)
     try:
         await broker.connect()
         app.state.broker = broker
+        
+        # 엔진 생성 및 백그라운드 매매 루프 시작
+        engine = TradingEngine(broker, settings)
+        app.state.engine = engine
+        app.state.engine_task = asyncio.create_task(engine.start())
+        logger.info("트레이딩 엔진 백그라운드 태스크 시작 완료")
+        
     except Exception as e:
-        logger.error(f"브로커 초기 연결 실패: {e}")
+        logger.error(f"브로커-엔진 초기 연결 실패: {e}")
         app.state.broker = None
 
     yield
 
     # 종료 처리
     logger.info("시스템 종료 중...")
+    
+    # 엔진 루프 안전 종료
+    if hasattr(app.state, "engine"):
+        await app.state.engine.stop()
+        if hasattr(app.state, "engine_task"):
+            try:
+                await asyncio.wait_for(app.state.engine_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("엔진 태스크 강제 종료 타임아웃")
+
     try:
         from backend.persistence.database import close_database
         await close_database()
