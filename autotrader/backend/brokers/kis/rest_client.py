@@ -203,56 +203,65 @@ class KISRestClient:
                         url, headers=headers, content=json.dumps(body or {})
                     )
 
-                if response.status_code == 200:
+                # 응답 본문 파싱 시도 (KIS는 에러 시 500 상태코드와 함께 JSON을 반환하기도 함)
+                try:
                     data = response.json()
-                    rt_cd = data.get("rt_cd", "")
+                except ValueError:
+                    data = {}
 
-                    if rt_cd == "0":
-                        self._error_count = max(0, self._error_count - 1)
-                        return data
+                rt_cd = data.get("rt_cd", "")
+                msg_cd = data.get("msg_cd", data.get("message", ""))
+                msg1 = data.get("msg1", "")
 
-                    # API 비즈니스 오류
-                    msg_cd = data.get("msg_cd", "")
-                    msg1 = data.get("msg1", "")
+                # 1. 정상 응답
+                if response.status_code == 200 and rt_cd == "0":
+                    self._error_count = max(0, self._error_count - 1)
+                    return data
+
+                # 2. 토큰 만료/오류 처리 (EGW00123, EGW00121 등)
+                if msg_cd in ("EGW00123", "EGW00121") or "token" in msg1.lower() or "토큰" in msg1:
+                    logger.warning("토큰 만료 감지, 강제 재발급 및 재시도 진행")
+                    self._auth.invalidate_token()
+                    await self._auth.ensure_token()
+                    headers["authorization"] = f"Bearer {self._auth.access_token}"
+                    continue
+
+                # 3. Rate Limit 초과 처리 (EGW00201)
+                if msg_cd == "EGW00201" or "초과" in msg1:
+                    backoff = min(
+                        INITIAL_BACKOFF_SECONDS * (2 ** attempt),
+                        MAX_BACKOFF_SECONDS,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+
+                # 4. 기타 비즈니스 오류 로그 기록
+                if msg_cd or msg1:
                     logger.warning(
-                        "KIS API 비즈니스 오류",
+                        "KIS API 오류 파싱됨",
                         extra={
-                            "event": "kis_api_business_error",
+                            "event": "kis_api_error_parsed",
                             "tr_id": converted_tr_id,
                             "msg_cd": msg_cd,
                             "msg1": msg1,
+                            "status_code": response.status_code,
                         },
                     )
 
-                    # EGW00123, EGW00121 등 토큰 만료/오류 처리
-                    if msg_cd in ("EGW00123", "EGW00121") or "token" in msg1.lower() or "토큰" in msg1:
-                        logger.warning("토큰 만료 감지, 강제 재발급 및 재시도 진행")
-                        self._auth.invalidate_token()
-                        await self._auth.ensure_token()
-                        headers["authorization"] = f"Bearer {self._auth.access_token}"
-                        continue
-
-                    # EGW00201: 초당 거래건수 초과 → 재시도
-                    if msg_cd == "EGW00201":
-                        backoff = min(
-                            INITIAL_BACKOFF_SECONDS * (2 ** attempt),
-                            MAX_BACKOFF_SECONDS,
-                        )
-                        await asyncio.sleep(backoff)
-                        continue
-
+                # 5. 최대 재시도 및 기타 오류 예외 발생
+                if response.status_code == 200:
                     raise KISApiError(
                         f"KIS API 오류: [{msg_cd}] {msg1}",
                         status_code=200,
                         error_code=msg_cd,
                     )
-
-                # HTTP 오류
-                self._error_count += 1
-                raise KISApiError(
-                    f"HTTP {response.status_code}: {response.text}",
-                    status_code=response.status_code,
-                )
+                else:
+                    self._error_count += 1
+                    raise KISApiError(
+                        f"HTTP {response.status_code}: {response.text}",
+                        status_code=response.status_code,
+                        error_code=msg_cd,
+                    )
 
             except httpx.TimeoutException as e:
                 last_error = e
