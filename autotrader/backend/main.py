@@ -59,33 +59,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # DB 실패해도 API는 시작 (헬스체크용)
 
     # KIS 브로커 연결 (계좌 잔고 실시간 조회용)
-    import asyncio
     from backend.brokers.kis.auth import KISAuth
     from backend.brokers.kis.order_api import KISOrderAPI
+    from backend.brokers.kis.ws_client import KISWebSocketClient
     from backend.strategy.engine import TradingEngine
     
     auth = KISAuth(settings)
     broker = KISOrderAPI(auth, settings)
+    ws_client = KISWebSocketClient(auth, settings)
     try:
         await broker.connect()
         app.state.broker = broker
         
         # 엔진 생성 및 백그라운드 매매 루프 시작
         engine = TradingEngine(broker, settings)
+        engine.set_ws_client(ws_client)
         app.state.engine = engine
+        
+        app.state.ws_task = asyncio.create_task(ws_client.start())
         app.state.engine_task = asyncio.create_task(engine.start())
-        logger.info("트레이딩 엔진 백그라운드 태스크 시작 완료")
+        logger.info("트레이딩 엔진 및 웹소켓 백그라운드 태스크 시작 완료")
         
     except Exception as e:
         logger.error(f"브로커-엔진 초기 연결 실패: {e}")
         app.state.broker = None
+        app.state.ws_client = None
 
     yield
 
     # 종료 처리
     logger.info("시스템 종료 중...")
     
-    # 엔진 루프 안전 종료
+    # 엔진 루프 및 웹소켓 안전 종료
     if hasattr(app.state, "engine"):
         await app.state.engine.stop()
         if hasattr(app.state, "engine_task"):
@@ -93,6 +98,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await asyncio.wait_for(app.state.engine_task, timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning("엔진 태스크 강제 종료 타임아웃")
+                
+    if hasattr(app, "ws_client") or hasattr(app.state, "ws_task"):
+        try:
+            # engine의 ws_client를 직접 stop 할 수 있어야 함.
+            if hasattr(app.state.engine, "_ws_client") and app.state.engine._ws_client:
+                await app.state.engine._ws_client.stop()
+            if hasattr(app.state, "ws_task"):
+                await asyncio.wait_for(app.state.ws_task, timeout=3.0)
+        except Exception as e:
+            logger.warning(f"웹소켓 종료 오류: {e}")
 
     try:
         from backend.persistence.database import close_database

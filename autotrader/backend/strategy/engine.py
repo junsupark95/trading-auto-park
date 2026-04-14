@@ -102,12 +102,44 @@ class TradingEngine:
         # ORB 데이터
         self._orb_data: dict[str, OrbData] = {}
 
+        # 실시간 데이터 연동 (웹소켓)
+        self._ws_client = None
+        self._current_prices: dict[str, Decimal] = {}
+        self._period_volumes: dict[str, int] = {}
+
         # 포지션 추적 (메모리)
         self._positions: dict[str, dict] = {}  # symbol -> position info
 
         # 루프 제어
         self._is_running = False
         self._api_error_count = 0
+
+    def set_ws_client(self, ws_client) -> None:
+        """WebSocket 클라이언트를 등록하고 콜백을 연결합니다."""
+        self._ws_client = ws_client
+        if self._ws_client:
+            self._ws_client.on_price = self._on_realtime_price
+
+    async def _on_realtime_price(self, tr_id: str, symbol: str, data: dict[str, str]) -> None:
+        """웹소켓 실시간 체결가 수신 콜백"""
+        try:
+            current_price = Decimal(data.get("STCK_PRPR", "0"))
+            vol = int(data.get("CNTG_VOL", "0"))
+            
+            self._current_prices[symbol] = current_price
+            self._period_volumes[symbol] = self._period_volumes.get(symbol, 0) + vol
+            
+            if symbol in self._orb_data:
+                orb = self._orb_data[symbol]
+                # 실시간으로 ORB 고저 갱신 (아직 확정 전일 때 대비)
+                if not orb.is_formed:
+                    if orb.orb_high == 0 or current_price > orb.orb_high:
+                        orb.orb_high = current_price
+                    if orb.orb_low == 0 or current_price < orb.orb_low:
+                        orb.orb_low = current_price
+
+        except Exception as e:
+            logger.error(f"체결가 수신 오류: {e}")
 
     @property
     def is_running(self) -> bool:
@@ -282,8 +314,28 @@ class TradingEngine:
             if candidates:
                 # 가장 점수가 높은 최상위 후보 1개를 감시 상태로 전이
                 best = candidates[0]
+                
+                # 이전 감시 종목이 있다면 구독 웹소켓 해제
+                prev_symbol = self.state_machine.symbol
+                if prev_symbol and prev_symbol != best.symbol and self._ws_client:
+                    await self._ws_client.unsubscribe_price(prev_symbol)
+                
                 if best.symbol not in self._orb_data:
-                    self._orb_data[best.symbol] = OrbData()
+                    # 빈 ORB 데이터 초기화 (이후 틱/봉으로 채워짐)
+                    now_dt = datetime.now()
+                    self._orb_data[best.symbol] = OrbData(
+                        symbol=best.symbol,
+                        orb_high=Decimal("0"),
+                        orb_low=Decimal("0"),
+                        orb_volume=0,
+                        orb_start=now_dt,
+                        orb_end=now_dt,
+                        is_formed=False
+                    )
+                
+                # 신규 종목 웹소켓 체결가 스트림 구독
+                if self._ws_client and (not prev_symbol or prev_symbol != best.symbol):
+                    await self._ws_client.subscribe_price(best.symbol)
                 
                 try:
                     self.state_machine.transition(
@@ -300,7 +352,69 @@ class TradingEngine:
 
     async def _do_watching(self) -> None:
         """감시 상태: ORB 형성 대기 및 돌파 확인."""
-        # 구현: WebSocket에서 실시간 체결가 수신 시 ORB 고저 갱신
+        symbol = self.state_machine.symbol
+        if not symbol or symbol not in self._orb_data:
+            await asyncio.sleep(1)
+            return
+
+        orb = self._orb_data[symbol]
+        current_price = self._current_prices.get(symbol)
+        period_colume = self._period_volumes.get(symbol, 0)
+
+        # 아직 첫 틱을 못 받았거나 ORB 미형성 상태면 리턴 (스캐너가 ORB 돌파 임박 종목을 잡아왔으므로 형성은 True로 간주해도 됨)
+        if current_price is None:
+            await asyncio.sleep(1)
+            return
+            
+        # 스캐너에서 잡아온 시점엔 15분 이상 지났으므로 ORB가 이미 형성되어 있다고 강제 플래그 (가정)
+        if not orb.is_formed:
+            orb.is_formed = True
+
+        try:
+            # 진입 평가 실행 (이 내부에서 규칙 통과를 체크하고, 통과시에만 AI를 호출함)
+            # risk_ctx를 위한 임시 Context 구성
+            from backend.strategy.risk_engine import RiskContext
+            risk_ctx = RiskContext(
+                total_assets=Decimal("10000000"),  # 모의 테스트용 임시 캐싱 잔고 (추후 Broker 연동)
+                available_cash=Decimal("10000000"),
+                unrealized_pnl=Decimal("0"),
+                daily_pnl=Decimal("0"),
+                max_drawdown=Decimal("0"),
+                current_positions=len(self._positions)
+            )
+
+            # Signal Generator를 통해 ORB 돌파 + 거래량 + (선택적)AI 의견 종합 청취
+            decision = await self._signal_gen.evaluate_entry(
+                symbol=symbol,
+                orb=orb,
+                current_price=current_price,
+                period_volume=period_colume,
+                orb_avg_volume=1, # 임시 최소 스피드 거래량
+                risk_ctx=risk_ctx,
+                ai_request=None, # SignalGenerator 내부에서 생성하도록 위임
+            )
+
+            if decision.action == "ENTER" and decision.signal:
+                logger.info(f"[{symbol}] 진입 승인됨! 가격: {decision.signal.price}, 사유: {decision.reasons}")
+                
+                # 주문 전송
+                # 주문 수량은 리스크 엔진이 정해준 자산 대비 비율 기반 계산 (여기선 1주로 고정된 모의 테스트)
+                quantity = 1 
+                
+                # 주문 모듈로 구매 요청
+                buy_result = await self._order_manager.submit_buy(
+                    symbol=symbol,
+                    quantity=quantity,
+                    price=current_price,
+                    reason="ORB_AI_BREAKOUT"
+                )
+                
+                if buy_result:
+                    self.state_machine.transition(TradingEvent.BUY_ORDER_SENT, symbol=symbol)
+                    
+        except Exception as e:
+            logger.error(f"감시 중 평가/주문 오류: {e}")
+
         await asyncio.sleep(1)
 
     async def _do_position_management(self) -> None:

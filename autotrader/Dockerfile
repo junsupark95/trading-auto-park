@@ -21,6 +21,7 @@ FROM python:3.12-slim AS production
 # 시스템 패키지
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # 작업 디렉토리
@@ -43,6 +44,7 @@ ENV HOST=0.0.0.0
 ENV TRADING_MODE=paper
 ENV LIVE_TRADING=false
 ENV CONFIRM_LIVE_ORDERS=false
+ENV TZ=Asia/Seoul
 
 # 포트 노출
 EXPOSE ${PORT}
