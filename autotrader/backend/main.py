@@ -59,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # DB 실패해도 API는 시작 (헬스체크용)
 
     # KIS 브로커 연결 (계좌 잔고 실시간 조회용)
+    import asyncio
     from backend.brokers.kis.auth import KISAuth
     from backend.brokers.kis.order_api import KISOrderAPI
     from backend.brokers.kis.ws_client import KISWebSocketClient
